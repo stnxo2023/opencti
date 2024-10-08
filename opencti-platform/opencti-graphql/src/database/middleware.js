@@ -446,6 +446,46 @@ export const stixLoadByFilters = async (context, user, types, args) => {
 };
 // endregion
 
+const isValidDate = (stringDate) => {
+  const dateParsed = Date.parse(stringDate);
+  if (!dateParsed) return false;
+  const dateInstance = new Date(dateParsed);
+  return dateInstance.toISOString() === stringDate;
+};
+
+// used to get a "restricted" value of a current attribute value depending on the value type
+const restrictValue = (entityValue) => {
+  if (Array.isArray((entityValue))) return [];
+  if (isValidDate(entityValue)) return FROM_START_STR;
+  const type = typeof entityValue;
+  switch (type) {
+    case 'string': return 'Restricted';
+    case 'object': return null;
+    default: return undefined;
+  }
+};
+
+// restricted entities need to be able to be queried through the API
+// we need to keep all of the entity attributes, but restrict their values
+export const buildRestrictedEntity = (resolvedEntity) => {
+  // we first create a deep copy of the resolved entity
+  const restrictedEntity = structuredClone(resolvedEntity);
+  // for every attribute of the entity, we restrict it's value: we obfuscate the real value with a fake default value
+  for (let i = 0; i < Object.keys(restrictedEntity).length; i += 1) {
+    const item = Object.keys(restrictedEntity)[i];
+    restrictedEntity[item] = restrictedEntity[item] ? restrictValue(restrictedEntity[item]) : restrictedEntity[item];
+  }
+  // we return the restricted entity with some additional restricted data in it
+  return {
+    ...restrictedEntity,
+    id: resolvedEntity.internal_id,
+    name: 'Restricted',
+    entity_type: resolvedEntity.entity_type,
+    parent_types: resolvedEntity.parent_types,
+    representative: { main: 'Restricted', secondary: 'Restricted' }
+  };
+};
+
 // region Graphics
 const convertAggregateDistributions = async (context, user, limit, orderingFunction, distribution) => {
   const data = R.take(limit, R.sortWith([orderingFunction(R.prop('value'))])(distribution));
@@ -473,12 +513,7 @@ const convertAggregateDistributions = async (context, user, limit, orderingFunct
       }
       return {
         ...n,
-        entity: {
-          id: element.id,
-          entity_type: element.entity_type,
-          parent_types: element.parent_types,
-          representative: { main: 'Restricted', secondary: 'Restricted' }
-        }
+        entity: buildRestrictedEntity(element)
       };
     });
 };
@@ -2422,14 +2457,16 @@ const buildRelationDeduplicationFilters = (input) => {
 };
 
 const isOutdatedUpdate = (context, element, attributeKey) => {
-  const attributesMap = new Map((element[iAttributes.name] ?? []).map((obj) => [obj.name, obj]));
-  const { updated_at: lastAttributeUpdateDate } = attributesMap.get(attributeKey) ?? {};
-  if (lastAttributeUpdateDate && context.eventId) {
-    try {
-      const eventDate = utcDate(parseInt(context.eventId.split('-')[0], 10)).toISOString();
-      return utcDate(lastAttributeUpdateDate).isAfter(eventDate);
-    } catch (e) {
-      logApp.error('Error evaluating event id', { key: attributeKey, event_id: context.eventId });
+  if (context.eventId) {
+    const attributesMap = new Map((element[iAttributes.name] ?? []).map((obj) => [obj.name, obj]));
+    const { updated_at: lastAttributeUpdateDate } = attributesMap.get(attributeKey) ?? {};
+    if (lastAttributeUpdateDate) {
+      try {
+        const eventDate = utcDate(parseInt(context.eventId.split('-')[0], 10)).toISOString();
+        return utcDate(lastAttributeUpdateDate).isAfter(eventDate);
+      } catch (e) {
+        logApp.error('Error evaluating event id', { key: attributeKey, event_id: context.eventId });
+      }
     }
   }
   return false;

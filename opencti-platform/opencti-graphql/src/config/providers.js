@@ -229,13 +229,17 @@ for (let i = 0; i < providerKeys.length; i += 1) {
       const samlOptions = { ...mappedConfig };
       const samlStrategy = new SamlStrategy(samlOptions, (profile, done) => {
         logApp.info('[SAML] Successfully logged', { profile });
+        const { nameID, nameIDFormat } = profile;
         const samlAttributes = profile.attributes ? profile.attributes : profile;
         const roleAttributes = mappedConfig.roles_management?.role_attributes || ['roles'];
         const groupAttributes = mappedConfig.groups_management?.group_attributes || ['groups'];
+        const userEmail = samlAttributes[mappedConfig.mail_attribute] || nameID;
+        if (mappedConfig.mail_attribute && !samlAttributes[mappedConfig.mail_attribute]) {
+          logApp.info(`[SAML] custom mail_attribute "${mappedConfig.mail_attribute}" in configuration but the custom field is not present SAML server response.`);
+        }
         const userName = samlAttributes[mappedConfig.account_attribute] || '';
         const firstname = samlAttributes[mappedConfig.firstname_attribute] || '';
         const lastname = samlAttributes[mappedConfig.lastname_attribute] || '';
-        const { nameID, nameIDFormat } = samlAttributes;
         const isGroupBaseAccess = (isNotEmptyField(mappedConfig.groups_management) && isNotEmptyField(mappedConfig.groups_management?.groups_mapping));
         logApp.info('[SAML] Groups management configuration', { groupsManagement: mappedConfig.groups_management });
         // region roles mapping
@@ -276,13 +280,12 @@ for (let i = 0; i < providerKeys.length; i += 1) {
         // endregion
         logApp.info('[SAML] Login handler', { isGroupBaseAccess, groupsToAssociate });
         if (!isGroupBaseAccess || groupsToAssociate.length > 0) {
-          const { nameID: email } = profile;
           const opts = {
             providerGroups: groupsToAssociate,
             providerOrganizations: organizationsToAssociate,
             autoCreateGroup: mappedConfig.auto_create_group ?? false,
           };
-          providerLoginHandler({ email, name: userName, firstname, lastname, provider_metadata: { nameID, nameIDFormat } }, done, opts);
+          providerLoginHandler({ email: userEmail, name: userName, firstname, lastname, provider_metadata: { nameID, nameIDFormat } }, done, opts);
         } else {
           done({ message: 'Restricted access, ask your administrator' });
         }
@@ -317,7 +320,7 @@ for (let i = 0; i < providerKeys.length; i += 1) {
           }
           // endregion
           const openIdScope = R.uniq(openIdScopes).join(' ');
-          const options = { client, passReqToCallback: true, params: { scope: openIdScope } };
+          const options = { logout_remote: mappedConfig.logout_remote, client, passReqToCallback: true, params: { scope: openIdScope } };
           const debugCallback = (message, meta) => logApp.info(message, meta);
           const openIDStrategy = new OpenIDStrategy(options, debugCallback, (_, tokenset, userinfo, done) => {
             logApp.info('[OPENID] Successfully logged', { userinfo });
@@ -368,10 +371,14 @@ for (let i = 0; i < providerKeys.length; i += 1) {
               const emailAttribute = mappedConfig.email_attribute ?? 'email';
               const firstnameAttribute = mappedConfig.firstname_attribute ?? 'given_name';
               const lastnameAttribute = mappedConfig.lastname_attribute ?? 'family_name';
-              const name = userinfo[nameAttribute];
-              const email = userinfo[emailAttribute];
-              const firstname = userinfo[firstnameAttribute];
-              const lastname = userinfo[lastnameAttribute];
+              const get_user_attributes_from_id_token = mappedConfig.get_user_attributes_from_id_token ?? false;
+
+              const user_attribute_obj = get_user_attributes_from_id_token ? jwtDecode(tokenset.id_token) : userinfo;
+
+              const name = user_attribute_obj[nameAttribute];
+              const email = user_attribute_obj[emailAttribute];
+              const firstname = user_attribute_obj[firstnameAttribute];
+              const lastname = user_attribute_obj[lastnameAttribute];
               const opts = {
                 providerGroups: groupsToAssociate,
                 providerOrganizations: organizationsToAssociate,
@@ -386,6 +393,7 @@ for (let i = 0; i < providerKeys.length; i += 1) {
           openIDStrategy.logout = (_, callback) => {
             const isSpecificUri = isNotEmptyField(config.logout_callback_url);
             const endpointUri = issuer.end_session_endpoint ? issuer.end_session_endpoint : `${config.issuer}/oidc/logout`;
+            logApp.debug(`[OPENID] logout configuration, isSpecificUri:${isSpecificUri}, issuer.end_session_endpoint:${issuer.end_session_endpoint}, final endpointUri: ${endpointUri}`);
             if (isSpecificUri) {
               const logoutUri = `${endpointUri}?post_logout_redirect_uri=${config.logout_callback_url}`;
               callback(null, logoutUri);
